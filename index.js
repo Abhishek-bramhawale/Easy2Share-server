@@ -2,6 +2,7 @@ const express = require('express');
 const multer = require('multer');
 const cors = require('cors');
 const path = require('path');
+const { nanoid } = require('nanoid');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
@@ -12,8 +13,9 @@ const upload = multer({ storage });
 
 const filesDB = {};
 
+
 function generateCode() {
-  return Math.random().toString(36).substring(2, 8).toUpperCase();
+  return nanoid(6).toUpperCase();
 }
 
 app.post('/upload', upload.array('files'), (req, res) => {
@@ -39,7 +41,6 @@ app.post('/upload', upload.array('files'), (req, res) => {
 
   res.json({ files: uploadedFilesInfo });
 });
-
 
 app.get('/download/:code', (req, res) => {
   const code = req.params.code.toUpperCase();
