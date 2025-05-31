@@ -1,24 +1,32 @@
-
 import express from 'express';
 import multer from 'multer';
+import cors from 'cors';
 import { nanoid } from 'nanoid';
 import QRCode from 'qrcode';
-import dotenv from 'dotenv';
-import cors from 'cors';
+import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
 import mongoose from 'mongoose';
+import dotenv from 'dotenv';
 
 dotenv.config();
 
-const app = express();
-const PORT = process.env.PORT || 3000;
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
+const app = express();
+const PORT = process.env.PORT || 5000;
+
+// Explicitly configure CORS for your frontend origin
 const allowedOrigins = [
-  'http://localhost:3000', 
-  
+  'http://localhost:3000', // For local development
+  'https://file-sharing-frontend-gold.vercel.app', // YOUR ACTUAL VERCEL FRONTEND URL
 ];
 
 app.use(cors({
   origin: function (origin, callback) {
+    // allow requests with no origin 
+    // (like mobile apps or curl requests)
     if (!origin) return callback(null, true);
     if (allowedOrigins.indexOf(origin) === -1) {
       const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
@@ -28,28 +36,10 @@ app.use(cors({
   }
 }));
 
-const storage = multer.memoryStorage();
-const upload = multer({ storage });
+app.use(express.json());
 
-const fileStore = {};
-
-app.post('/upload', upload.array('files'), async (req, res) => {
-  if (!req.files || req.files.length === 0) {
-    return res.status(400).json({ error: 'No files uploaded' });
-  }
-
-  const uploaded = await Promise.all(
-    req.files.map(async (file) => {
-      const code = nanoid(6).toUpperCase();
-      const qr = await QRCode.toDataURL(`${process.env.BASE_URL}/download/${code}`);
-      fileStore[code] = { ...file, qr };
-      return { filename: file.originalname, code, qr };
-    })
-  );
-
-  app.use(express.json());
-
-  mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/file-sharing', {
+// MongoDB connection
+mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/file-sharing', {
     useNewUrlParser: true,
     useUnifiedTopology: true
 });
@@ -60,19 +50,28 @@ db.once('open', () => {
   console.log('Connected to MongoDB');
 });
 
+// File Schema (Reverted to include individual code)
 const fileSchema = new mongoose.Schema({
     filename: String,
     originalName: String,
-    path: String, 
+    path: String, // Storing the path on the server filesystem
     size: Number,
-    code: { type: String, unique: true }, 
-    fileUrl: String, 
+    code: { type: String, unique: true }, // Individual unique code
+    fileUrl: String, // Storing the public URL
     createdAt: { type: Date, default: Date.now }
 });
 
 const File = mongoose.model('File', fileSchema);
 
+// Remove Upload Session Schema
+// const uploadSessionSchema = new mongoose.Schema({
+//     code: { type: String, unique: true },
+//     files: [{ type: mongoose.Schema.Types.ObjectId, ref: 'File' }],
+//     createdAt: { type: Date, default: Date.now }
+// });
+// const UploadSession = mongoose.model('UploadSession', uploadSessionSchema);
 
+// Create uploads directory if it doesn't exist
 const uploadsDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadsDir)) {
     fs.mkdirSync(uploadsDir);
@@ -92,7 +91,6 @@ app.post('/upload', upload.array('files'), async (req, res) => {
   if (!req.files || req.files.length === 0) {
     return res.status(400).json({ error: 'No files uploaded' });
   }
-
 
   const uploadedFilesInfo = [];
 
@@ -133,16 +131,38 @@ app.post('/upload', upload.array('files'), async (req, res) => {
   }
 });
 
-  res.json({ files: uploaded });
+// This endpoint now fetches a single file by code and redirects
+app.get('/download/:code', async (req, res) => {
+  try {
+    const file = await File.findOne({ code: req.params.code });
+    if (!file) {
+      return res.status(404).json({ success: false, error: 'Invalid code or file not found' });
+    }
+    
+    // Redirect the user to the static file URL
+    res.redirect(file.fileUrl);
+
+  } catch (error) {
+    console.error('Download error:', error);
+    res.status(500).json({ success: false, error: 'Server error during download' });
+  }
 });
 
-app.get('/download/:code', (req, res) => {
-  const file = fileStore[req.params.code];
-  if (!file) return res.status(404).send('File not found');
-  res.setHeader('Content-Disposition', `attachment; filename=${file.originalname}`);
-  res.send(file.buffer);
-});
+// Remove the /api/session/:sessionCode endpoint
+/*
+app.get('/api/session/:sessionCode', async (req, res) => {
+    try {
+        const session = await UploadSession.findOne({ code: req.params.code }).populate('files');
+        if (!session) {
+            return res.status(404).json({ success: false, error: 'Invalid session code or session not found' });
+        }
+        res.json({ success: true, files: session.files });
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+    } catch (error) {
+        console.error('Fetch session files error:', error);
+        res.status(500).json({ success: false, error: 'Server error fetching session files' });
+    }
 });
+*/
+
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`)); 
