@@ -92,7 +92,15 @@ const storage = multer.diskStorage({
   filename: (req, file, cb) => cb(null, Date.now() + '-' + file.originalname)
 });
 
-const upload = multer({ storage });
+const upload = multer({ 
+  storage,
+  limits: {
+    fileSize: 50 * 1024 * 1024 // 50MB limit
+  }
+});
+
+// Add a route to check upload progress
+const uploadProgress = new Map();
 
 app.post('/upload', upload.array('files'), async (req, res) => {
   if (!req.files || req.files.length === 0) {
@@ -100,6 +108,8 @@ app.post('/upload', upload.array('files'), async (req, res) => {
   }
 
   const uploadedFilesInfo = [];
+  const uploadId = nanoid(6);
+  uploadProgress.set(uploadId, { total: 0, current: 0 });
 
   try {
     console.log('Received files:', req.files.map(f => ({ filename: f.filename, size: f.size })));
@@ -138,6 +148,7 @@ app.post('/upload', upload.array('files'), async (req, res) => {
       });
     }
 
+    uploadProgress.delete(uploadId);
     res.json({ success: true, files: uploadedFilesInfo });
 
   } catch (error) {
@@ -146,12 +157,22 @@ app.post('/upload', upload.array('files'), async (req, res) => {
       stack: error.stack,
       name: error.name
     });
+    uploadProgress.delete(uploadId);
     res.status(500).json({ 
       success: false, 
       error: 'Server error during upload',
       details: error.message 
     });
   }
+});
+
+// Add endpoint to check upload progress
+app.get('/upload-progress/:uploadId', (req, res) => {
+  const progress = uploadProgress.get(req.params.uploadId);
+  if (!progress) {
+    return res.status(404).json({ error: 'Upload not found' });
+  }
+  res.json(progress);
 });
 
 app.get('/download/:code', async (req, res) => {
