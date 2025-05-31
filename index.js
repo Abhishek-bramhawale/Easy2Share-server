@@ -4,11 +4,29 @@ import multer from 'multer';
 import { nanoid } from 'nanoid';
 import QRCode from 'qrcode';
 import dotenv from 'dotenv';
+import cors from 'cors';
+import mongoose from 'mongoose';
 
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+const allowedOrigins = [
+  'http://localhost:3000', 
+  
+];
+
+app.use(cors({
+  origin: function (origin, callback) {
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.indexOf(origin) === -1) {
+      const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
+      return callback(new Error(msg), false);
+    }
+    return callback(null, true);
+  }
+}));
 
 const storage = multer.memoryStorage();
 const upload = multer({ storage });
@@ -28,6 +46,32 @@ app.post('/upload', upload.array('files'), async (req, res) => {
       return { filename: file.originalname, code, qr };
     })
   );
+
+  app.use(express.json());
+
+  mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/file-sharing', {
+    useNewUrlParser: true,
+    useUnifiedTopology: true
+});
+
+const db = mongoose.connection;
+db.on('error', console.error.bind(console, 'MongoDB connection error:'));
+db.once('open', () => {
+  console.log('Connected to MongoDB');
+});
+
+const fileSchema = new mongoose.Schema({
+    filename: String,
+    originalName: String,
+    path: String, 
+    size: Number,
+    code: { type: String, unique: true }, 
+    fileUrl: String, 
+    createdAt: { type: Date, default: Date.now }
+});
+
+const File = mongoose.model('File', fileSchema);
+
 
   res.json({ files: uploaded });
 });
