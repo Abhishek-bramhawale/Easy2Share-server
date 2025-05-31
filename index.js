@@ -73,6 +73,66 @@ const fileSchema = new mongoose.Schema({
 const File = mongoose.model('File', fileSchema);
 
 
+const uploadsDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadsDir)) {
+    fs.mkdirSync(uploadsDir);
+}
+
+app.use('/uploads', express.static(uploadsDir));
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, uploadsDir),
+  filename: (req, file, cb) => cb(null, Date.now() + '-' + file.originalname)
+});
+
+// Change to upload.array to handle multiple files
+const upload = multer({ storage });
+
+app.post('/upload', upload.array('files'), async (req, res) => {
+  if (!req.files || req.files.length === 0) {
+    return res.status(400).json({ error: 'No files uploaded' });
+  }
+
+
+  const uploadedFilesInfo = [];
+
+  try {
+    for (const file of req.files) {
+      const code = nanoid(6); // Generate unique code for each file
+       // Construct the public file URL using the determined host and filename
+      const fileUrl = `${req.protocol}://${req.get('host')}/uploads/${file.filename}`;
+      
+      const newFile = new File({
+          filename: file.filename,
+          originalName: file.originalname,
+          path: file.path, // Save the server file path
+          size: file.size,
+          code: code, // Assign the individual file code
+          fileUrl: fileUrl // Save the public URL
+      });
+
+      await newFile.save();
+
+      // Generate QR code for the individual file download link
+      const fileDownloadUrl = `${req.protocol}://${req.get('host')}/download/${code}`;
+      const qr = await QRCode.toDataURL(fileDownloadUrl);
+
+      uploadedFilesInfo.push({
+          originalName: file.originalname,
+          code: code,
+          fileDownloadUrl: fileDownloadUrl,
+          qr: qr
+      });
+    }
+
+    res.json({ success: true, files: uploadedFilesInfo });
+
+  } catch (error) {
+    console.error('Upload error:', error);
+    res.status(500).json({ success: false, error: 'Server error during upload' });
+  }
+});
+
   res.json({ files: uploaded });
 });
 
