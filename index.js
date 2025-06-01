@@ -17,6 +17,9 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// Configure Express to trust proxy headers
+app.set('trust proxy', true);
+
 const allowedOrigins = [
   'http://localhost:3000',
   'https://easy2-share-client.vercel.app', 
