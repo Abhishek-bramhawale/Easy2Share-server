@@ -60,12 +60,14 @@ db.once('open', () => {
 });
 
 const fileSchema = new mongoose.Schema({
-    filename: String,
-    originalName: String,
-    path: String, 
-    size: Number,
-    code: { type: String, unique: true }, 
-    fileUrl: String, 
+    files: [{
+        filename: String,
+        originalName: String,
+        path: String,
+        size: Number,
+        fileUrl: String
+    }],
+    code: { type: String, unique: true },
     createdAt: { type: Date, default: Date.now }
 });
 
@@ -104,63 +106,67 @@ const uploadProgress = new Map();
 
 app.post('/upload', upload.array('files'), async (req, res) => {
   if (!req.files || req.files.length === 0) {
+    console.log('Upload attempt with no files.');
     return res.status(400).json({ error: 'No files uploaded' });
   }
 
-  const uploadedFilesInfo = [];
-  const uploadId = nanoid(6);
-  uploadProgress.set(uploadId, { total: 0, current: 0 });
+  console.log('Received files for batch upload:', req.files.map(f => ({ filename: f.filename, size: f.size })));
+  
+  // Generate a single code for the entire batch of files
+  const code = nanoid(6);
+  console.log('Generated single code for batch:', code);
 
+  // Map all uploaded files to the schema format
+  const filesData = req.files.map(file => ({
+    filename: file.filename,
+    originalName: file.originalname,
+    path: file.path,
+    size: file.size,
+    fileUrl: `${req.protocol}://${req.get('host')}/uploads/${file.filename}`
+  }));
+  
   try {
-    console.log('Received files:', req.files.map(f => ({ filename: f.filename, size: f.size })));
-    
-    for (const file of req.files) {
-      console.log('Processing file:', file.originalname);
-      
-      const code = nanoid(6);
-      const fileUrl = `${req.protocol}://${req.get('host')}/uploads/${file.filename}`;
-      
-      console.log('Generated code:', code);
-      console.log('File URL:', fileUrl);
-      
-      const newFile = new File({
-          filename: file.filename,
-          originalName: file.originalname,
-          path: file.path,
-          size: file.size,
-          code: code,
-          fileUrl: fileUrl
-      });
+    // Create a single database entry for the file group
+    const newFileGroup = new File({
+      files: filesData,
+      code: code
+    });
 
-      console.log('Attempting to save file to database...');
-      await newFile.save();
-      console.log('File saved successfully');
+    console.log('Attempting to save file group to database with code:', code);
+    await newFileGroup.save();
+    console.log('File group saved successfully.');
 
-      const fileDownloadUrl = `${req.protocol}://${req.get('host')}/download/${code}`;
-      console.log('Generating QR code for:', fileDownloadUrl);
-      const qr = await QRCode.toDataURL(fileDownloadUrl);
+    // Generate download URL and QR code using the single code for the batch
+    const fileDownloadUrl = `${req.protocol}://${req.get('host')}/download/${code}`;
+    console.log('Generating QR code for batch URL:', fileDownloadUrl);
+    const qr = await QRCode.toDataURL(fileDownloadUrl);
 
-      uploadedFilesInfo.push({
-          originalName: file.originalname,
-          code: code,
-          fileDownloadUrl: fileDownloadUrl,
-          qr: qr
-      });
-    }
+    // Prepare the response for the frontend: a single object with batch info
+    const batchResponseInfo = {
+      // This `files` key holds an array of original names, as expected by frontend rendering
+      files: filesData.map(file => file.originalName),
+      code: code,
+      fileDownloadUrl: fileDownloadUrl,
+      qr: qr
+    };
 
-    uploadProgress.delete(uploadId);
-    res.json({ success: true, files: uploadedFilesInfo });
+    console.log('Sending batch upload response data to frontend:', batchResponseInfo);
+    // Send a single response containing info for the file group, wrapped in an array
+    res.json({ 
+      success: true, 
+      // The `files` key here holds an array with one element: the batchResponseInfo object
+      files: [batchResponseInfo]  
+    });
 
   } catch (error) {
-    console.error('Detailed upload error:', {
-      message: error.message,
-      stack: error.stack,
-      name: error.name
+    console.error('Detailed upload error during batch processing:', { 
+      message: error.message, 
+      stack: error.stack, 
+      name: error.name 
     });
-    uploadProgress.delete(uploadId);
     res.status(500).json({ 
       success: false, 
-      error: 'Server error during upload',
+      error: 'Server error during batch upload', 
       details: error.message 
     });
   }
@@ -177,16 +183,66 @@ app.get('/upload-progress/:uploadId', (req, res) => {
 
 app.get('/download/:code', async (req, res) => {
   try {
-    const file = await File.findOne({ code: req.params.code });
-    if (!file) {
-      return res.status(404).json({ success: false, error: 'Invalid code or file not found' });
+    console.log('Download request for code:', req.params.code);
+    console.log('Query parameters:', req.query);
+    const fileGroup = await File.findOne({ code: req.params.code });
+    if (!fileGroup) {
+      console.log('No files found for code:', req.params.code);
+      return res.status(404).json({ success: false, error: 'Invalid code or files not found' });
     }
     
-    res.redirect(file.fileUrl);
+    console.log('Found files:', fileGroup.files.map(f => f.originalName));
+    
+    // If it's a direct file download request (has ?file= parameter)
+    const requestedFile = req.query.file;
+    console.log('Requested file query parameter:', requestedFile);
+    if (requestedFile) {
+      const file = fileGroup.files.find(f => f.filename === requestedFile);
+      if (!file) {
+        console.log('Specific file not found:', requestedFile);
+        return res.status(404).json({ success: false, error: 'File not found' });
+      }
+      
+      console.log('Streaming file:', file.originalName);
+      // Set appropriate headers for file download
+      res.setHeader('Content-Disposition', `attachment; filename="${file.originalName}"`);
+      res.setHeader('Content-Type', 'application/octet-stream');
+      
+      // Stream the file
+      const fileStream = fs.createReadStream(file.path);
+      fileStream.pipe(res);
+      
+      // Log when streaming is finished
+      fileStream.on('end', () => {
+        console.log('Finished streaming file:', file.originalName);
+      });
+      fileStream.on('error', (streamErr) => {
+        console.error('Error streaming file:', file.originalName, streamErr);
+        if (!res.headersSent) {
+          res.status(500).json({ success: false, error: 'Server error during file streaming' });
+        }
+      });
+      
+      return; // Stop further processing
+    }
+    
+    // Return file information for the frontend
+    console.log('Returning file list to frontend');
+    const response = {
+      success: true,
+      files: fileGroup.files.map(file => ({
+        name: file.originalName,
+        url: `${req.protocol}://${req.get('host')}/download/${req.params.code}?file=${file.filename}`
+      }))
+    };
+    console.log('Sending response:', response);
+    res.json(response);
 
   } catch (error) {
-    console.error('Download error:', error);
-    res.status(500).json({ success: false, error: 'Server error during download' });
+    console.error('Download error in catch block:', error);
+    if (!res.headersSent) {
+      res.status(500).json({ success: false, error: 'Server error during download process' });
+    }
   }
 });
 
