@@ -192,15 +192,20 @@ app.get('/download/:code', async (req, res) => {
     
     console.log('Found files:', fileGroup.files.map(f => f.originalName));
     
-    const requestedFile = req.query.file;
-    let fileToDownload;
-    
-    if (requestedFile) {
-      fileToDownload = fileGroup.files.find(f => f.filename === requestedFile);
-    } else {
-      fileToDownload = fileGroup.files[0];
+    // If no specific file is requested, return the file list
+    if (!req.query.file) {
+      console.log('Returning file list');
+      return res.json({
+        success: true,
+        files: fileGroup.files.map(file => ({
+          filename: file.filename,
+          originalName: file.originalName
+        }))
+      });
     }
     
+    // If specific file is requested, stream it
+    const fileToDownload = fileGroup.files.find(f => f.filename === req.query.file);
     if (!fileToDownload) {
       console.log('File not found');
       return res.status(404).json({ success: false, error: 'File not found' });
