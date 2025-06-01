@@ -100,7 +100,7 @@ const storage = multer.diskStorage({
 const upload = multer({ 
   storage,
   limits: {
-    fileSize: 50 * 1024 * 1024 // 50MB limit
+    fileSize: 150 * 1024 * 1024 // 50MB limit
   }
 });
 
@@ -115,7 +115,7 @@ app.post('/upload', upload.array('files'), async (req, res) => {
 
   console.log('Received files for batch upload:', req.files.map(f => ({ filename: f.filename, size: f.size })));
   
-  // Generate a single code for the entire batch of files
+  // Generate a single code for multiple files
   const code = nanoid(6);
   console.log('Generated single code for batch:', code);
 
@@ -154,10 +154,8 @@ app.post('/upload', upload.array('files'), async (req, res) => {
     };
 
     console.log('Sending batch upload response data to frontend:', batchResponseInfo);
-    // Send a single response containing info for the file group, wrapped in an array
     res.json({ 
       success: true, 
-      // The `files` key here holds an array with one element: the batchResponseInfo object
       files: [batchResponseInfo]  
     });
 
@@ -175,7 +173,6 @@ app.post('/upload', upload.array('files'), async (req, res) => {
   }
 });
 
-// Add endpoint to check upload progress
 app.get('/upload-progress/:uploadId', (req, res) => {
   const progress = uploadProgress.get(req.params.uploadId);
   if (!progress) {
@@ -196,7 +193,6 @@ app.get('/download/:code', async (req, res) => {
     
     console.log('Found files:', fileGroup.files.map(f => f.originalName));
     
-    // If it's a direct file download request (has ?file= parameter)
     const requestedFile = req.query.file;
     console.log('Requested file query parameter:', requestedFile);
     if (requestedFile) {
@@ -207,15 +203,12 @@ app.get('/download/:code', async (req, res) => {
       }
       
       console.log('Streaming file:', file.originalName);
-      // Set appropriate headers for file download
       res.setHeader('Content-Disposition', `attachment; filename="${file.originalName}"`);
       res.setHeader('Content-Type', 'application/octet-stream');
       
-      // Stream the file
       const fileStream = fs.createReadStream(file.path);
       fileStream.pipe(res);
       
-      // Log when streaming is finished
       fileStream.on('end', () => {
         console.log('Finished streaming file:', file.originalName);
       });
@@ -226,10 +219,9 @@ app.get('/download/:code', async (req, res) => {
         }
       });
       
-      return; // Stop further processing
+      return; 
     }
     
-    // Return file information for the frontend
     console.log('Returning file list to frontend');
     const response = {
       success: true,
