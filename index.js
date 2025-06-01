@@ -192,6 +192,12 @@ app.get('/download/:code', async (req, res) => {
     
     console.log('Found files:', fileGroup.files.map(f => f.originalName));
     
+    // Check if this is a direct browser access (no file parameter and no Accept header for JSON)
+    if (!req.query.file && (!req.headers.accept || !req.headers.accept.includes('application/json'))) {
+      // Redirect to the client app with the code
+      return res.redirect(`${process.env.CLIENT_URL || 'https://easy2-share-client.vercel.app'}?code=${req.params.code}`);
+    }
+    
     // If no specific file is requested, return the file list
     if (!req.query.file) {
       console.log('Returning file list');
