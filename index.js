@@ -184,7 +184,6 @@ app.get('/upload-progress/:uploadId', (req, res) => {
 app.get('/download/:code', async (req, res) => {
   try {
     console.log('Download request for code:', req.params.code);
-    console.log('Query parameters:', req.query);
     const fileGroup = await File.findOne({ code: req.params.code });
     if (!fileGroup) {
       console.log('No files found for code:', req.params.code);
@@ -194,44 +193,36 @@ app.get('/download/:code', async (req, res) => {
     console.log('Found files:', fileGroup.files.map(f => f.originalName));
     
     const requestedFile = req.query.file;
-    console.log('Requested file query parameter:', requestedFile);
+    let fileToDownload;
+    
     if (requestedFile) {
-      const file = fileGroup.files.find(f => f.filename === requestedFile);
-      if (!file) {
-        console.log('Specific file not found:', requestedFile);
-        return res.status(404).json({ success: false, error: 'File not found' });
-      }
-      
-      console.log('Streaming file:', file.originalName);
-      res.setHeader('Content-Disposition', `attachment; filename="${file.originalName}"`);
-      res.setHeader('Content-Type', 'application/octet-stream');
-      
-      const fileStream = fs.createReadStream(file.path);
-      fileStream.pipe(res);
-      
-      fileStream.on('end', () => {
-        console.log('Finished streaming file:', file.originalName);
-      });
-      fileStream.on('error', (streamErr) => {
-        console.error('Error streaming file:', file.originalName, streamErr);
-        if (!res.headersSent) {
-          res.status(500).json({ success: false, error: 'Server error during file streaming' });
-        }
-      });
-      
-      return; 
+      fileToDownload = fileGroup.files.find(f => f.filename === requestedFile);
+    } else {
+      fileToDownload = fileGroup.files[0];
     }
     
-    console.log('Returning file list to frontend');
-    const response = {
-      success: true,
-      files: fileGroup.files.map(file => ({
-        name: file.originalName,
-        url: `${req.protocol}://${req.get('host')}/download/${req.params.code}?file=${file.filename}`
-      }))
-    };
-    console.log('Sending response:', response);
-    res.json(response);
+    if (!fileToDownload) {
+      console.log('File not found');
+      return res.status(404).json({ success: false, error: 'File not found' });
+    }
+    
+    console.log('Streaming file:', fileToDownload.originalName);
+    res.setHeader('Content-Disposition', `attachment; filename="${fileToDownload.originalName}"`);
+    res.setHeader('Content-Type', 'application/octet-stream');
+    
+    const fileStream = fs.createReadStream(fileToDownload.path);
+    fileStream.pipe(res);
+    
+    fileStream.on('end', () => {
+      console.log('Finished streaming file:', fileToDownload.originalName);
+    });
+    
+    fileStream.on('error', (streamErr) => {
+      console.error('Error streaming file:', fileToDownload.originalName, streamErr);
+      if (!res.headersSent) {
+        res.status(500).json({ success: false, error: 'Server error during file streaming' });
+      }
+    });
 
   } catch (error) {
     console.error('Download error in catch block:', error);
