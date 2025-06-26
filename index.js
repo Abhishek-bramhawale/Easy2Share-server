@@ -243,4 +243,8 @@ app.get('/download/:code', async (req, res) => {
   }
 });
 
+app.get('/', (req, res) => {
+  res.status(200).send('OK');
+});
+
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`)); 
