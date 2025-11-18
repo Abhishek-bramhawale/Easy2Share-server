@@ -23,8 +23,9 @@ app.set('trust proxy', true);
 const allowedOrigins = [
   'http://localhost:3000',
   'https://easy2-share-client.vercel.app', 
-  'https://easy2share-server.onrender.com' 
-];
+  'https://easy2share-server.onrender.com',
+  process.env.AZURE_APP_URL 
+].filter(Boolean);
 
 app.use(cors({
   origin: function (origin, callback) {
@@ -71,19 +72,26 @@ const fileSchema = new mongoose.Schema({
         fileUrl: String
     }],
     code: { type: String, unique: true },
-    createdAt: { type: Date, default: Date.now }
+    createdAt: { type: Date, default: Date.now },
+    expiresAt: { type: Date, default: () => new Date(Date.now() + 60 * 60 * 1000) } // 1 hour from now
 });
+
+fileSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
 const File = mongoose.model('File', fileSchema);
 
-const uploadsDir = path.join(__dirname, 'uploads');
+const isAzure = process.env.WEBSITE_INSTANCE_ID !== undefined;
+const uploadsDir = isAzure 
+    ? path.join('/home', 'uploads')  
+    : path.join(__dirname, 'uploads'); 
+
 try {
     if (!fs.existsSync(uploadsDir)) {
         console.log('Creating uploads directory...');
         fs.mkdirSync(uploadsDir, { recursive: true });
-        console.log('Uploads directory created successfully');
+        console.log('Uploads directory created successfully at:', uploadsDir);
     } else {
-        console.log('Uploads directory already exists');
+        console.log('Uploads directory already exists at:', uploadsDir);
     }
 } catch (error) {
     console.error('Error creating uploads directory:', error);
@@ -100,9 +108,39 @@ const storage = multer.diskStorage({
 const upload = multer({ 
   storage,
   limits: {
-    fileSize: 150 * 1024 * 1024 // 50MB limit
+    fileSize: 150 * 1024 * 1024 // 150MB limit
   }
 });
+
+async function cleanupExpiredFiles() {
+  try {
+    const now = new Date();
+    const expiredFiles = await File.find({ 
+      expiresAt: { $lt: new Date(now.getTime() - 5 * 60 * 1000) } 
+    });
+    
+    for (const fileGroup of expiredFiles) {
+      for (const file of fileGroup.files) {
+        try {
+          if (fs.existsSync(file.path)) {
+            fs.unlinkSync(file.path);
+            console.log('Deleted expired file:', file.path);
+          }
+        } catch (err) {
+          console.error('Error deleting file:', file.path, err);
+        }
+      }
+    }
+    
+    if (expiredFiles.length > 0) {
+      console.log(`Cleanup completed. Deleted ${expiredFiles.length} expired file groups.`);
+    }
+  } catch (error) {
+    console.error('Error during cleanup:', error);
+  }
+}
+
+setInterval(cleanupExpiredFiles, 10 * 60 * 1000);
 
 // Add a route to check upload progress
 const uploadProgress = new Map();
@@ -188,6 +226,21 @@ app.get('/download/:code', async (req, res) => {
     if (!fileGroup) {
       console.log('No files found for code:', req.params.code);
       return res.status(404).json({ success: false, error: 'Invalid code or files not found' });
+    }
+    
+    if (fileGroup.expiresAt && new Date() > fileGroup.expiresAt) {
+      console.log('File expired for code:', req.params.code);
+      for (const file of fileGroup.files) {
+        try {
+          if (fs.existsSync(file.path)) {
+            fs.unlinkSync(file.path);
+          }
+        } catch (err) {
+          console.error('Error deleting expired file:', file.path, err);
+        }
+      }
+      await File.deleteOne({ code: req.params.code });
+      return res.status(410).json({ success: false, error: 'Files have expired (1 hour limit)' });
     }
     
     console.log('Found files:', fileGroup.files.map(f => f.originalName));
