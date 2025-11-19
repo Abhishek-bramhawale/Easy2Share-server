@@ -31,18 +31,26 @@ app.use(cors({
   origin: function (origin, callback) {
     if (!origin) return callback(null, true);
     
-    if (allowedOrigins.indexOf(origin) === -1) {
-      const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
-      return callback(new Error(msg), false);
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      return callback(null, true);
     }
-    return callback(null, true);
+    
+    if (process.env.WEBSITE_INSTANCE_ID) {
+      return callback(null, true);
+    }
+    
+    const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
+    return callback(new Error(msg), false);
   },
   credentials: true, 
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
 
+app.options('*', cors());
+
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/file-sharing', {
     useNewUrlParser: true,
@@ -82,7 +90,7 @@ const File = mongoose.model('File', fileSchema);
 
 const isAzure = process.env.WEBSITE_INSTANCE_ID !== undefined;
 const uploadsDir = isAzure 
-    ? path.join('/home', 'uploads')  
+    ? (process.platform === 'win32' ? path.join('D:', 'home', 'uploads') : path.join('/home', 'uploads'))
     : path.join(__dirname, 'uploads'); 
 
 try {
@@ -146,6 +154,14 @@ setInterval(cleanupExpiredFiles, 10 * 60 * 1000);
 const uploadProgress = new Map();
 
 app.post('/upload', upload.array('files'), async (req, res) => {
+  console.log('Upload endpoint hit:', {
+    method: req.method,
+    url: req.url,
+    headers: req.headers,
+    hasFiles: !!req.files,
+    filesCount: req.files?.length || 0
+  });
+  
   if (!req.files || req.files.length === 0) {
     console.log('Upload attempt with no files.');
     return res.status(400).json({ error: 'No files uploaded' });
@@ -201,8 +217,26 @@ app.post('/upload', upload.array('files'), async (req, res) => {
     console.error('Detailed upload error during batch processing:', { 
       message: error.message, 
       stack: error.stack, 
-      name: error.name 
+      name: error.name,
+      code: error.code
     });
+    
+    if (error.name === 'ValidationError') {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Validation error', 
+        details: error.message 
+      });
+    }
+    
+    if (error.code === 'ENOENT') {
+      return res.status(500).json({ 
+        success: false, 
+        error: 'Upload directory not found', 
+        details: 'Please check server configuration' 
+      });
+    }
+    
     res.status(500).json({ 
       success: false, 
       error: 'Server error during batch upload', 
@@ -297,7 +331,23 @@ app.get('/download/:code', async (req, res) => {
 });
 
 app.get('/', (req, res) => {
-  res.status(200).send('OK');
+  res.status(200).json({ 
+    status: 'OK', 
+    message: 'Easy2Share Server is running',
+    timestamp: new Date().toISOString()
+  });
 });
 
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`)); 
+app.get('/health', (req, res) => {
+  res.status(200).json({ 
+    status: 'healthy',
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString()
+  });
+});
+
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server running on port ${PORT}`);
+  console.log(`Environment: ${isAzure ? 'Azure' : 'Local'}`);
+  console.log(`Uploads directory: ${uploadsDir}`);
+}); 
