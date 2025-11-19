@@ -50,10 +50,7 @@ app.use(cors({
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/file-sharing', {
-    useNewUrlParser: true,
-    useUnifiedTopology: true
-})
+mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/file-sharing')
 .then(() => {
     console.log('MongoDB Connected Successfully');
 })
@@ -88,7 +85,7 @@ const File = mongoose.model('File', fileSchema);
 
 const isAzure = process.env.WEBSITE_INSTANCE_ID !== undefined;
 const uploadsDir = isAzure 
-    ? (process.platform === 'win32' ? path.join('D:', 'home', 'uploads') : path.join('/home', 'uploads'))
+    ? path.join('/home', 'site', 'wwwroot', 'uploads')
     : path.join(__dirname, 'uploads'); 
 
 try {
@@ -147,9 +144,6 @@ async function cleanupExpiredFiles() {
 }
 
 setInterval(cleanupExpiredFiles, 10 * 60 * 1000);
-
-// Add a route to check upload progress
-const uploadProgress = new Map();
 
 app.post('/upload', upload.array('files'), async (req, res) => {
   console.log('Upload endpoint hit:', {
@@ -243,14 +237,6 @@ app.post('/upload', upload.array('files'), async (req, res) => {
   }
 });
 
-app.get('/upload-progress/:uploadId', (req, res) => {
-  const progress = uploadProgress.get(req.params.uploadId);
-  if (!progress) {
-    return res.status(404).json({ error: 'Upload not found' });
-  }
-  res.json(progress);
-});
-
 app.get('/download/:code', async (req, res) => {
   try {
     console.log('Download request for code:', req.params.code);
@@ -280,7 +266,8 @@ app.get('/download/:code', async (req, res) => {
     // Check if this is a direct browser access (no file parameter and no Accept header for JSON)
     if (!req.query.file && (!req.headers.accept || !req.headers.accept.includes('application/json'))) {
       // Redirect to the client app with the code
-      return res.redirect(`${process.env.CLIENT_URL || 'https://easy2-share-client.vercel.app'}?code=${req.params.code}`);
+      const clientUrl = process.env.CLIENT_URL || (isAzure ? 'https://easy2-share-client.vercel.app' : 'http://localhost:3000');
+      return res.redirect(`${clientUrl}?code=${req.params.code}`);
     }
     
     // If no specific file is requested, return the file list
