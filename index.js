@@ -8,11 +8,14 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import mongoose from 'mongoose';
 import dotenv from 'dotenv';
+import { ZipArchive } from 'archiver';
 
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+const MAX_FILE_SIZE = 150 * 1024 * 1024; // 150MB limit per file
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -111,7 +114,7 @@ const storage = multer.diskStorage({
 const upload = multer({ 
   storage,
   limits: {
-    fileSize: 150 * 1024 * 1024 // 150MB limit
+    fileSize: MAX_FILE_SIZE
   }
 });
 
@@ -145,6 +148,7 @@ async function cleanupExpiredFiles() {
 
 setInterval(cleanupExpiredFiles, 10 * 60 * 1000);
 
+// POST /upload - receive files, save to disk, create share code, return QR + download link
 app.post('/upload', upload.array('files'), async (req, res) => {
   console.log('Upload endpoint hit:', {
     method: req.method,
@@ -157,6 +161,24 @@ app.post('/upload', upload.array('files'), async (req, res) => {
   if (!req.files || req.files.length === 0) {
     console.log('Upload attempt with no files.');
     return res.status(400).json({ error: 'No files uploaded' });
+  }
+
+  const oversizedFile = req.files.find((file) => file.size > MAX_FILE_SIZE);
+  if (oversizedFile) {
+    for (const file of req.files) {
+      try {
+        if (fs.existsSync(file.path)) {
+          fs.unlinkSync(file.path);
+        }
+      } catch (cleanupErr) {
+        console.error('Error cleaning up oversized upload:', file.path, cleanupErr);
+      }
+    }
+
+    return res.status(413).json({
+      success: false,
+      error: `File "${oversizedFile.originalname}" exceeds the 150MB limit`
+    });
   }
 
   console.log('Received files for batch upload:', req.files.map(f => ({ filename: f.filename, size: f.size })));
@@ -237,6 +259,7 @@ app.post('/upload', upload.array('files'), async (req, res) => {
   }
 });
 
+// GET /download/:code - get file list by code, stream a file, zip download, or redirect to client app
 app.get('/download/:code', async (req, res) => {
   try {
     console.log('Download request for code:', req.params.code);
@@ -262,6 +285,48 @@ app.get('/download/:code', async (req, res) => {
     }
     
     console.log('Found files:', fileGroup.files.map(f => f.originalName));
+
+    const getFileSize = (file) => {
+      if (typeof file.size === 'number' && file.size > 0) return file.size;
+      try {
+        if (file.path && fs.existsSync(file.path)) {
+          return fs.statSync(file.path).size;
+        }
+      } catch (statErr) {
+        console.error('Could not read file size:', file.path, statErr);
+      }
+      return 0;
+    };
+
+    if (req.query.zip === 'true') {
+      if (fileGroup.files.length === 0) {
+        return res.status(404).json({ success: false, error: 'No files found for this code' });
+      }
+
+      console.log('Streaming ZIP for code:', req.params.code);
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', `attachment; filename="easy2share-${req.params.code}.zip"`);
+
+      const archive = new ZipArchive({ zlib: { level: 9 } });
+
+      archive.on('error', (archiveErr) => {
+        console.error('ZIP archive error:', archiveErr);
+        if (!res.headersSent) {
+          res.status(500).json({ success: false, error: 'Server error during ZIP creation' });
+        }
+      });
+
+      archive.pipe(res);
+
+      for (const file of fileGroup.files) {
+        if (fs.existsSync(file.path)) {
+          archive.file(file.path, { name: file.originalName });
+        }
+      }
+
+      await archive.finalize();
+      return;
+    }
     
     // Check if this is a direct browser access (no file parameter and no Accept header for JSON)
     if (!req.query.file && (!req.headers.accept || !req.headers.accept.includes('application/json'))) {
@@ -277,7 +342,8 @@ app.get('/download/:code', async (req, res) => {
         success: true,
         files: fileGroup.files.map(file => ({
           filename: file.filename,
-          originalName: file.originalName
+          originalName: file.originalName,
+          size: getFileSize(file)
         }))
       });
     }
@@ -329,6 +395,32 @@ app.get('/health', (req, res) => {
     uptime: process.uptime(),
     timestamp: new Date().toISOString()
   });
+});
+
+// Handle upload size and multer errors
+app.use((err, req, res, next) => {
+  if (err instanceof multer.MulterError) {
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(413).json({
+        success: false,
+        error: 'One or more files exceed the 150MB limit'
+      });
+    }
+    return res.status(400).json({
+      success: false,
+      error: err.message
+    });
+  }
+
+  if (err) {
+    return res.status(500).json({
+      success: false,
+      error: 'Upload failed',
+      details: err.message
+    });
+  }
+
+  next();
 });
 
 app.listen(PORT, '0.0.0.0', () => {
